@@ -7,17 +7,16 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// Health check endpoint
 app.get('/health', (req, res) => {
     res.status(200).send('OK');
 });
 
 const server = http.createServer(app);
 
-// Initialize Socket.io with CORS enabled
+// Initialize Socket.io
 const io = new Server(server, {
     cors: {
-        origin: '*', // Allow Vercel static frontends to connect
+        origin: '*',
         methods: ['GET', 'POST']
     }
 });
@@ -27,7 +26,7 @@ const SUITS = ['C', 'D', 'H', 'S'];
 const VALUES = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
 const RANK_MAP = {
     '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
-    'J': 11, 'Q': 12, 'K': 13, 'A': 14 // Ace is high
+    'J': 11, 'Q': 12, 'K': 13, 'A': 14
 };
 
 // --- Card Class ---
@@ -92,7 +91,7 @@ class Deck {
 // --- Server Rooms Dictionary ---
 const rooms = {};
 
-// Helper to generate a 4-letter alphanumeric Room Code
+// Helper to generate Room Code
 function generateRoomCode() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let code = '';
@@ -101,7 +100,7 @@ function generateRoomCode() {
         for (let i = 0; i < 4; i++) {
             code += chars.charAt(Math.floor(Math.random() * chars.length));
         }
-    } while (rooms[code]); // Ensure unique
+    } while (rooms[code]);
     return code;
 }
 
@@ -116,13 +115,7 @@ function getSuitUnicode(suit) {
     }
 }
 
-// Helper to check if all active players are ready with bets/pass
-function checkAllBetsLocked(room) {
-    const activePlayers = room.players.filter(p => !p.isEliminated);
-    return activePlayers.every(p => p.status === 'Ready' || p.status === 'Passed');
-}
-
-// Broadcast logs
+// Add log entry
 function addRoomLog(room, message, type = 'info') {
     const log = {
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
@@ -130,189 +123,21 @@ function addRoomLog(room, message, type = 'info') {
         type: type
     };
     room.logs.push(log);
-    if (room.logs.length > 50) room.logs.shift(); // Cap logs
+    if (room.logs.length > 50) room.logs.shift();
 }
 
-// --- Bot Betting Processor ---
-function processBotBets(roomCode) {
-    const room = rooms[roomCode];
-    if (!room || room.gameState !== 'BETTING') return;
-
+// Collect Antes from all active players
+function collectAntes(room) {
+    let anteCount = 0;
     room.players.forEach(p => {
-        if (p.isBot && !p.isEliminated && p.status === 'Betting...') {
-            // Random bot thinking latency
-            const delay = 800 + Math.random() * 1200;
-            setTimeout(() => {
-                const refreshedRoom = rooms[roomCode];
-                if (!refreshedRoom || refreshedRoom.gameState !== 'BETTING' || p.isEliminated) return;
-
-                const cardAVal = refreshedRoom.cardA.rank;
-                const cardBVal = refreshedRoom.cardB.rank;
-                const gap = cardBVal - cardAVal - 1;
-
-                if (gap <= 2) {
-                    // Pass/Fold on auto-loss ranges
-                    p.isPass = true;
-                    p.currentBet = 0;
-                    p.status = 'Passed';
-                    addRoomLog(refreshedRoom, `🤖 ${p.name} decided to Pass.`, 'info');
-                } else {
-                    // Calculate bet amount based on probability
-                    let bet = 10;
-                    if (gap >= 8) {
-                        const pct = 0.15 + Math.random() * 0.15; // 15% - 30%
-                        bet = Math.floor((p.balance * pct) / 10) * 10;
-                    } else if (gap >= 5) {
-                        const pct = 0.07 + Math.random() * 0.08; // 7% - 15%
-                        bet = Math.floor((p.balance * pct) / 10) * 10;
-                    } else {
-                        bet = Math.random() > 0.5 ? 20 : 10;
-                    }
-
-                    // Bounds checks
-                    if (bet > p.balance) bet = p.balance;
-                    if (bet < 10 && p.balance >= 10) bet = 10;
-                    if (p.balance < 10) bet = p.balance;
-
-                    p.currentBet = bet;
-                    p.balance -= bet;
-                    p.status = 'Ready';
-                    addRoomLog(refreshedRoom, `🤖 ${p.name} placed a bet of ${bet} chips.`, 'info');
-                }
-
-                // Update room and check if all bets locked
-                io.to(roomCode).emit('roomUpdate', getClientRoomState(refreshedRoom));
-                
-                if (checkAllBetsLocked(refreshedRoom)) {
-                    triggerThirdCardDraw(roomCode);
-                }
-            }, delay);
+        if (!p.isEliminated) {
+            const ante = Math.min(p.balance, 10);
+            p.balance -= ante;
+            room.pot += ante;
+            anteCount++;
         }
     });
-}
-
-// --- Draw Third Card & Reveal Phase ---
-function triggerThirdCardDraw(roomCode) {
-    const room = rooms[roomCode];
-    if (!room || room.gameState !== 'BETTING') return;
-
-    room.gameState = 'REVEALING';
-    io.to(roomCode).emit('roomUpdate', getClientRoomState(room));
-
-    setTimeout(() => {
-        const refreshedRoom = rooms[roomCode];
-        if (!refreshedRoom) return;
-
-        // Draw third card
-        const cardC = refreshedRoom.deck.draw();
-        refreshedRoom.cardC = cardC;
-
-        addRoomLog(refreshedRoom, `Dealer drew Third Card: ${cardC.value} of ${getSuitUnicode(cardC.suit)}`, 'dealer');
-        io.to(roomCode).emit('roomUpdate', getClientRoomState(refreshedRoom));
-        
-        // Broadcast animations to trigger deal sounds
-        io.to(roomCode).emit('animateThirdCard', cardC);
-
-        setTimeout(() => {
-            evaluateRoundResults(roomCode);
-        }, refreshedRoom.actionSpeed * 1.5);
-
-    }, 800);
-}
-
-// --- Evaluate Round Outcomes ---
-function evaluateRoundResults(roomCode) {
-    const room = rooms[roomCode];
-    if (!room || room.gameState !== 'REVEALING') return;
-
-    room.gameState = 'EVALUATING';
-
-    const cardAVal = room.cardA.rank;
-    const cardBVal = room.cardB.rank;
-    const cardCVal = room.cardC.rank;
-    const cardCName = room.cardC.value;
-
-    const isWinningCard = (cardCVal > cardAVal && cardCVal < cardBVal);
-    let winCount = 0;
-    let loseCount = 0;
-
-    room.players.forEach(p => {
-        if (p.isEliminated || p.isPass || p.status === 'Passed') {
-            if (p.status === 'Passed') {
-                p.recentResult = 'PASS';
-                p.status = 'Folded';
-            }
-            return;
-        }
-
-        if (isWinningCard) {
-            // Winner
-            const profit = p.currentBet;
-            p.balance += (p.currentBet * 2);
-            p.recentGain = profit;
-            p.recentResult = 'WIN';
-            p.status = `Won +${profit}`;
-            winCount++;
-            addRoomLog(room, `${p.name} WINS! Won ${profit} chips.`, 'win');
-        } else {
-            // Loser
-            const loss = p.currentBet;
-            p.recentGain = -loss;
-            p.recentResult = 'LOSE';
-            p.status = `Lost -${loss}`;
-            loseCount++;
-            addRoomLog(room, `${p.name} LOSES! Lost ${loss} chips.`, 'lose');
-        }
-        p.currentBet = 0;
-    });
-
-    // Sound cue broadcasts
-    if (winCount > 0) {
-        io.to(roomCode).emit('soundCue', 'win');
-        io.to(roomCode).emit('confettiTrigger');
-    } else if (loseCount > 0) {
-        io.to(roomCode).emit('soundCue', 'lose');
-    }
-
-    // Dealer speech remarks
-    if (isWinningCard) {
-        room.dealerBubble = `Drew a ${cardCName}! Congratulations to our winners!`;
-    } else {
-        if (cardCVal === cardAVal || cardCVal === cardBVal) {
-            room.dealerBubble = `Hit the post! Drew a ${cardCName}. Unlucky bounds hit!`;
-        } else {
-            room.dealerBubble = `Drew a ${cardCName}. Out of bounds. House wins those chips!`;
-        }
-    }
-
-    io.to(roomCode).emit('roomUpdate', getClientRoomState(room));
-
-    // Wait and progress to ROUND_END
-    setTimeout(() => {
-        const refreshedRoom = rooms[roomCode];
-        if (!refreshedRoom) return;
-
-        refreshedRoom.gameState = 'ROUND_END';
-
-        // Check eliminations
-        refreshedRoom.players.forEach(p => {
-            if (!p.isEliminated && p.balance <= 0) {
-                p.isEliminated = true;
-                p.status = 'Eliminated';
-                p.recentResult = 'ELIMINATED';
-                addRoomLog(refreshedRoom, `${p.name} has been ELIMINATED!`, 'lose');
-            }
-        });
-
-        // Check if all human players are eliminated
-        const activeHumans = refreshedRoom.players.filter(p => !p.isBot && !p.isEliminated);
-        if (activeHumans.length === 0) {
-            refreshedRoom.gameState = 'GAME_OVER';
-            addRoomLog(refreshedRoom, `--- SESSION OVER ---`, 'info');
-        }
-
-        io.to(roomCode).emit('roomUpdate', getClientRoomState(refreshedRoom));
-    }, room.actionSpeed * 3.5);
+    addRoomLog(room, `Antes collected: ${anteCount} players anted 10 chips to the pot. Pot is now ${room.pot} chips.`, 'dealer');
 }
 
 // Clean room state object sent to client browsers
@@ -328,15 +153,335 @@ function getClientRoomState(room) {
         cardC: room.cardC,
         dealerBubble: room.dealerBubble,
         players: room.players,
-        logs: room.logs
+        logs: room.logs,
+        pot: room.pot,
+        activePlayerIndex: room.activePlayerIndex
     };
 }
 
-// --- Socket.io Event Handling ---
+// --- Sequential Turn Advancement ---
+function advanceTurn(roomCode) {
+    const room = rooms[roomCode];
+    if (!room) return;
+
+    // Discard active cards
+    room.deck.discardCard(room.cardA);
+    room.deck.discardCard(room.cardB);
+    room.deck.discardCard(room.cardC);
+    room.cardA = null;
+    room.cardB = null;
+    room.cardC = null;
+
+    // Process eliminations
+    room.players.forEach(p => {
+        if (!p.isEliminated && p.balance <= 0) {
+            p.isEliminated = true;
+            p.status = 'Eliminated';
+            p.recentResult = 'ELIMINATED';
+            addRoomLog(room, `${p.name} has been ELIMINATED!`, 'lose');
+        }
+    });
+
+    // Check if pot is empty, refill if so
+    if (room.pot <= 0) {
+        addRoomLog(room, `Pot is empty! Refilling...`, 'dealer');
+        collectAntes(room);
+        io.to(roomCode).emit('soundCue', 'chip');
+    }
+
+    // Find next active player
+    let nextIndex = room.activePlayerIndex + 1;
+    let foundNext = false;
+    let nextIdxResolved = 0;
+
+    for (let i = 0; i < room.players.length; i++) {
+        const checkIdx = (nextIndex + i) % room.players.length;
+        if (!room.players[checkIdx].isEliminated) {
+            nextIdxResolved = checkIdx;
+            foundNext = true;
+            break;
+        }
+    }
+
+    // If we wrapped back to index 0 or wrapped backwards, increment round
+    if (foundNext) {
+        if (nextIdxResolved <= room.activePlayerIndex) {
+            room.roundNumber++;
+        }
+        room.activePlayerIndex = nextIdxResolved;
+    }
+
+    const activeHumans = room.players.filter(p => !p.isBot && !p.isEliminated);
+    if (!foundNext || activeHumans.length === 0) {
+        room.gameState = 'GAME_OVER';
+        addRoomLog(room, `--- SESSION OVER ---`, 'info');
+        io.to(roomCode).emit('roomUpdate', getClientRoomState(room));
+    } else {
+        dealEndpointsForActivePlayer(roomCode);
+    }
+}
+
+// Deal endpoints for active player
+function dealEndpointsForActivePlayer(roomCode) {
+    const room = rooms[roomCode];
+    if (!room) return;
+
+    room.gameState = 'DEALING';
+    const activePlayer = room.players[room.activePlayerIndex];
+    room.dealerBubble = `Dealing cards for ${activePlayer.name}...`;
+
+    // Reset player round flags
+    room.players.forEach(p => {
+        p.recentGain = 0;
+        p.recentResult = '';
+        if (p.id === activePlayer.id) {
+            p.status = 'Thinking...';
+            p.isPass = false;
+            p.currentBet = 0;
+        } else if (!p.isEliminated) {
+            p.status = 'Waiting';
+        }
+    });
+
+    io.to(roomCode).emit('roomUpdate', getClientRoomState(room));
+
+    // Reshuffle checks
+    if (room.deck.size() < 10) {
+        room.deck.recycleDiscard();
+        addRoomLog(room, `Dealer reshuffled deck. Discards recycled.`, 'dealer');
+        io.to(roomCode).emit('soundCue', 'shuffle');
+    }
+
+    // Deal endpoints
+    setTimeout(() => {
+        const refreshedRoom = rooms[roomCode];
+        if (!refreshedRoom) return;
+
+        const card1 = refreshedRoom.deck.draw();
+        const card2 = refreshedRoom.deck.draw();
+
+        if (card1.rank <= card2.rank) {
+            refreshedRoom.cardA = card1;
+            refreshedRoom.cardB = card2;
+        } else {
+            refreshedRoom.cardA = card2;
+            refreshedRoom.cardB = card1;
+        }
+
+        io.to(roomCode).emit('animateEndpoints', { cardA: refreshedRoom.cardA, cardB: refreshedRoom.cardB });
+
+        setTimeout(() => {
+            const innerRoom = rooms[roomCode];
+            if (!innerRoom) return;
+
+            const player = innerRoom.players[innerRoom.activePlayerIndex];
+            const low = innerRoom.cardA.value;
+            const high = innerRoom.cardB.value;
+            const gap = innerRoom.cardB.rank - innerRoom.cardA.rank - 1;
+
+            // --- Immediate Resolutions (Traditional Rules) ---
+            if (innerRoom.cardA.rank === innerRoom.cardB.rank) {
+                // Pair: Auto Win 20 chips
+                const winAmt = Math.min(innerRoom.pot, 20);
+                innerRoom.pot -= winAmt;
+                player.balance += winAmt;
+                player.recentGain = winAmt;
+                player.recentResult = 'WIN';
+                player.status = `Pair Auto-Win +${winAmt}`;
+
+                innerRoom.dealerBubble = `A pair of ${low}s! ${player.name} automatically wins ${winAmt} chips from the pot!`;
+                addRoomLog(innerRoom, `🎉 ${player.name} dealt pair of ${low}s. Auto-won ${winAmt} chips.`, 'win');
+                
+                io.to(roomCode).emit('roomUpdate', getClientRoomState(innerRoom));
+                io.to(roomCode).emit('soundCue', 'win');
+
+                setTimeout(() => {
+                    advanceTurn(roomCode);
+                }, 4000);
+
+            } else if (gap === 0) {
+                // Adjacent: Auto Lose 10 chips
+                const loseAmt = Math.min(player.balance, 10);
+                player.balance -= loseAmt;
+                innerRoom.pot += loseAmt;
+                player.recentGain = -loseAmt;
+                player.recentResult = 'LOSE';
+                player.status = `Adjacent Loss -${loseAmt}`;
+
+                innerRoom.dealerBubble = `Adjacent cards ${low} and ${high}! ${player.name} automatically loses ${loseAmt} chips to the pot.`;
+                addRoomLog(innerRoom, `💥 ${player.name} dealt adjacent ${low} & ${high}. Auto-lost ${loseAmt} chips.`, 'lose');
+
+                io.to(roomCode).emit('roomUpdate', getClientRoomState(innerRoom));
+                io.to(roomCode).emit('soundCue', 'lose');
+
+                setTimeout(() => {
+                    advanceTurn(roomCode);
+                }, 4000);
+
+            } else {
+                // Normal spread: betting console active
+                innerRoom.gameState = 'BETTING';
+                innerRoom.dealerBubble = `${player.name}'s turn. Range is ${low} to ${high}. Max bet: ${Math.min(player.balance, innerRoom.pot)}`;
+                
+                io.to(roomCode).emit('roomUpdate', getClientRoomState(innerRoom));
+
+                if (player.isBot) {
+                    executeBotTurn(roomCode);
+                }
+            }
+
+        }, refreshedRoom.actionSpeed * 1.5);
+
+    }, refreshedRoom.actionSpeed * 0.5);
+}
+
+// Bot sequential turn decision
+function executeBotTurn(roomCode) {
+    const room = rooms[roomCode];
+    if (!room || room.gameState !== 'BETTING') return;
+
+    const botPlayer = room.players[room.activePlayerIndex];
+    if (!botPlayer || !botPlayer.isBot) return;
+
+    const delay = 1200 + Math.random() * 1200;
+    setTimeout(() => {
+        const refreshedRoom = rooms[roomCode];
+        if (!refreshedRoom || refreshedRoom.gameState !== 'BETTING') return;
+
+        const lowRank = refreshedRoom.cardA.rank;
+        const highRank = refreshedRoom.cardB.rank;
+        const gap = highRank - lowRank - 1;
+
+        const maxBet = Math.min(botPlayer.balance, refreshedRoom.pot);
+
+        if (gap <= 2 || maxBet < 10) {
+            // Bot Pass
+            botPlayer.isPass = true;
+            botPlayer.currentBet = 0;
+            botPlayer.status = 'Passed';
+            addRoomLog(refreshedRoom, `🤖 ${botPlayer.name} passed their turn.`, 'info');
+            
+            io.to(roomCode).emit('roomUpdate', getClientRoomState(refreshedRoom));
+            io.to(roomCode).emit('soundCue', 'slide');
+
+            setTimeout(() => {
+                advanceTurn(roomCode);
+            }, 1200);
+        } else {
+            // Bot Bet
+            let bet = 10;
+            if (gap >= 8) {
+                const pct = 0.2 + Math.random() * 0.2;
+                bet = Math.floor((maxBet * pct) / 10) * 10;
+            } else if (gap >= 5) {
+                const pct = 0.08 + Math.random() * 0.08;
+                bet = Math.floor((maxBet * pct) / 10) * 10;
+            } else {
+                bet = 10;
+            }
+
+            if (bet > maxBet) bet = maxBet;
+            if (bet < 10 && maxBet >= 10) bet = 10;
+            if (maxBet < 10) bet = maxBet;
+
+            botPlayer.currentBet = bet;
+            botPlayer.balance -= bet;
+            botPlayer.status = 'Ready';
+
+            addRoomLog(refreshedRoom, `🤖 ${botPlayer.name} placed a bet of ${bet} chips.`, 'info');
+            io.to(roomCode).emit('roomUpdate', getClientRoomState(refreshedRoom));
+            io.to(roomCode).emit('soundCue', 'chip');
+
+            setTimeout(() => {
+                drawThirdCardForActivePlayer(roomCode);
+            }, 800);
+        }
+
+    }, delay);
+}
+
+// Draw third card
+function drawThirdCardForActivePlayer(roomCode) {
+    const room = rooms[roomCode];
+    if (!room || room.gameState !== 'BETTING') return;
+
+    room.gameState = 'REVEALING';
+    const activePlayer = room.players[room.activePlayerIndex];
+
+    const cardC = room.deck.draw();
+    room.cardC = cardC;
+
+    addRoomLog(room, `Dealer drew Third Card: ${cardC.value} of ${getSuitUnicode(cardC.suit)}`, 'dealer');
+    io.to(roomCode).emit('roomUpdate', getClientRoomState(room));
+    io.to(roomCode).emit('animateThirdCard', cardC);
+
+    setTimeout(() => {
+        resolveBetForActivePlayer(roomCode);
+    }, room.actionSpeed * 1.5);
+}
+
+// Resolve active player's bet outcome
+function resolveBetForActivePlayer(roomCode) {
+    const room = rooms[roomCode];
+    if (!room || room.gameState !== 'REVEALING') return;
+
+    room.gameState = 'EVALUATING';
+
+    const activePlayer = room.players[room.activePlayerIndex];
+    const cardAVal = room.cardA.rank;
+    const cardBVal = room.cardB.rank;
+    const cardCVal = room.cardC.rank;
+    const cardCName = room.cardC.value;
+
+    const isWinningCard = (cardCVal > cardAVal && cardCVal < cardBVal);
+    const bet = activePlayer.currentBet;
+
+    if (isWinningCard) {
+        // WIN
+        const profit = Math.min(room.pot, bet);
+        room.pot -= profit;
+        activePlayer.balance += (bet + profit); // Refund original bet + profit
+        activePlayer.recentGain = profit;
+        activePlayer.recentResult = 'WIN';
+        activePlayer.status = `Won +${profit}`;
+
+        room.dealerBubble = `Drew a ${cardCName}! ${activePlayer.name} wins ${profit} chips!`;
+        addRoomLog(room, `${activePlayer.name} WINS! Won ${profit} chips.`, 'win');
+
+        io.to(roomCode).emit('roomUpdate', getClientRoomState(room));
+        io.to(roomCode).emit('soundCue', 'win');
+        io.to(roomCode).emit('confettiTrigger');
+    } else {
+        // LOSE
+        room.pot += bet;
+        activePlayer.recentGain = -bet;
+        activePlayer.recentResult = 'LOSE';
+        activePlayer.status = `Lost -${bet}`;
+
+        if (cardCVal === cardAVal || cardCVal === cardBVal) {
+            room.dealerBubble = `Hit the post! Drew a ${cardCName}. ${activePlayer.name} loses their bet of ${bet} to the pot!`;
+        } else {
+            room.dealerBubble = `Drew a ${cardCName}. Out of bounds. ${activePlayer.name} loses their bet of ${bet} to the pot!`;
+        }
+
+        addRoomLog(room, `${activePlayer.name} LOSES! Lost ${bet} chips to the pot.`, 'lose');
+
+        io.to(roomCode).emit('roomUpdate', getClientRoomState(room));
+        io.to(roomCode).emit('soundCue', 'lose');
+    }
+
+    activePlayer.currentBet = 0;
+
+    setTimeout(() => {
+        advanceTurn(roomCode);
+    }, 4000);
+}
+
+// --- Socket Connection Handler ---
 io.on('connection', (socket) => {
     console.log(`Socket connected: ${socket.id}`);
 
-    // Create a new room
+    // Create room
     socket.on('createRoom', ({ playerName, color }) => {
         const roomCode = generateRoomCode();
         
@@ -367,44 +512,45 @@ io.on('connection', (socket) => {
             dealerBubble: `Room ${roomCode} created! Join in, players.`,
             players: [hostPlayer],
             logs: [],
+            pot: 0,
+            activePlayerIndex: 0,
             actionSpeed: 1000
         };
-        
+
         room.deck.shuffle();
         rooms[roomCode] = room;
-        
+
         socket.join(roomCode);
         socket.emit('roomCreated', { roomCode });
-        
+
         addRoomLog(room, `Table created. Room Code: ${roomCode}`, 'info');
         addRoomLog(room, `${playerName} joined as the Host.`, 'info');
 
         io.to(roomCode).emit('roomUpdate', getClientRoomState(room));
-        console.log(`Room created: ${roomCode} by ${playerName} (${socket.id})`);
     });
 
-    // Join an existing room
+    // Join room
     socket.on('joinRoom', ({ roomCode, playerName, color }) => {
         const cleanCode = roomCode.toUpperCase().trim();
         const room = rooms[cleanCode];
 
         if (!room) {
-            socket.emit('errorMessage', 'Room not found! Verify code.');
+            socket.emit('errorMessage', 'Room not found!');
             return;
         }
 
         if (room.gameState !== 'LOBBY') {
-            socket.emit('errorMessage', 'Game has already started in this room!');
+            socket.emit('errorMessage', 'Game has already started!');
             return;
         }
 
         if (room.players.length >= 8) {
-            socket.emit('errorMessage', 'Table is full! Maximum of 8 players.');
+            socket.emit('errorMessage', 'Table is full!');
             return;
         }
 
         if (room.players.some(p => p.name.toLowerCase() === playerName.toLowerCase())) {
-            socket.emit('errorMessage', 'Player name already taken in this room!');
+            socket.emit('errorMessage', 'Player name already taken!');
             return;
         }
 
@@ -430,20 +576,18 @@ io.on('connection', (socket) => {
         addRoomLog(room, `${playerName} joined the table.`, 'info');
         io.to(cleanCode).emit('roomUpdate', getClientRoomState(room));
         io.to(cleanCode).emit('toastMessage', `${playerName} joined the table.`);
-        console.log(`Player ${playerName} joined room ${cleanCode}`);
     });
 
-    // Add a Bot Player (Host only)
+    // Add bot (Host only)
     socket.on('addBot', ({ roomCode }) => {
         const room = rooms[roomCode];
         if (!room) return;
 
-        // Verify if caller is the host
         const sender = room.players.find(p => p.socketId === socket.id);
         if (!sender || !sender.isHost) return;
 
         if (room.players.length >= 8) {
-            socket.emit('errorMessage', 'Table is full! Maximum of 8 players.');
+            socket.emit('errorMessage', 'Table is full!');
             return;
         }
 
@@ -490,7 +634,7 @@ io.on('connection', (socket) => {
         io.to(roomCode).emit('toastMessage', `Bot ${selectedName} added.`);
     });
 
-    // Remove a seat (Host only)
+    // Remove player (Host only)
     socket.on('removePlayer', ({ roomCode, playerId }) => {
         const room = rooms[roomCode];
         if (!room) return;
@@ -502,7 +646,6 @@ io.on('connection', (socket) => {
         if (targetIndex > -1) {
             const target = room.players[targetIndex];
             
-            // Disconnect human socket if applicable
             if (target.socketId) {
                 const targetSocket = io.sockets.sockets.get(target.socketId);
                 if (targetSocket) {
@@ -518,7 +661,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Start the Game (Host only)
+    // Start game (Host only)
     socket.on('startGame', ({ roomCode }) => {
         const room = rooms[roomCode];
         if (!room) return;
@@ -533,205 +676,119 @@ io.on('connection', (socket) => {
 
         room.gameState = 'DEALING';
         room.roundNumber = 1;
+        room.activePlayerIndex = 0;
+        room.pot = 0;
         room.deck.init();
         room.deck.shuffle();
 
         addRoomLog(room, `--- GAME STARTED ---`, 'info');
         addRoomLog(room, `Dealer shuffled standard 52-card deck.`, 'dealer');
-        io.to(roomCode).emit('roomUpdate', getClientRoomState(room));
         io.to(roomCode).emit('soundCue', 'shuffle');
 
-        dealEndpoints(roomCode);
+        // Collect initial antes
+        collectAntes(room);
+
+        // Deal endpoints for player 0
+        dealEndpointsForActivePlayer(roomCode);
     });
 
-    // Deal endpoints logic
-    function dealEndpoints(roomCode) {
-        const room = rooms[roomCode];
-        if (!room) return;
-
-        room.gameState = 'DEALING';
-        room.cardA = null;
-        room.cardB = null;
-        room.cardC = null;
-        room.dealerBubble = "Dealers, shuffle up and deal...";
-
-        // Reset players round flags
-        room.players.forEach(p => {
-            p.recentGain = 0;
-            p.recentResult = '';
-            if (!p.isEliminated) {
-                p.currentBet = 0;
-                p.isPass = false;
-                p.status = 'Betting...';
-            }
-        });
-
-        io.to(roomCode).emit('roomUpdate', getClientRoomState(room));
-
-        // Shuffling trigger check
-        if (room.deck.size() < 15) {
-            room.deck.recycleDiscard();
-            addRoomLog(room, `Dealer reshuffled deck. Discards recycled.`, 'dealer');
-            io.to(roomCode).emit('soundCue', 'shuffle');
-        }
-
-        setTimeout(() => {
-            const card1 = room.deck.draw();
-            const card2 = room.deck.draw();
-
-            // Sort
-            if (card1.rank <= card2.rank) {
-                room.cardA = card1;
-                room.cardB = card2;
-            } else {
-                room.cardA = card2;
-                room.cardB = card1;
-            }
-
-            // Animate card deals
-            io.to(roomCode).emit('animateEndpoints', { cardA: room.cardA, cardB: room.cardB });
-            
-            setTimeout(() => {
-                const low = room.cardA.value;
-                const high = room.cardB.value;
-                const gap = room.cardB.rank - room.cardA.rank - 1;
-
-                if (room.cardA.rank === room.cardB.rank) {
-                    room.dealerBubble = `Pair of ${low}s! Autoloss if you bet. Safe bet is to fold!`;
-                    addRoomLog(room, `Dealer dealt pair of ${low}s. High risk: auto-loss.`, 'dealer');
-                } else if (gap === 0) {
-                    room.dealerBubble = `Adjacent cards! ${low} and ${high}. Pass to protect your chips!`;
-                    addRoomLog(room, `Dealer dealt adjacent cards ${low} and ${high}.`, 'dealer');
-                } else {
-                    room.dealerBubble = `Dealt low ${low} and high ${high}. Place your bets!`;
-                    addRoomLog(room, `Dealer dealt range: ${low} to ${high}.`, 'dealer');
-                }
-
-                room.gameState = 'BETTING';
-                io.to(roomCode).emit('roomUpdate', getClientRoomState(room));
-                
-                // Trigger bot decisions automatically
-                processBotBets(roomCode);
-
-            }, room.actionSpeed * 1.5);
-
-        }, room.actionSpeed * 0.5);
-    }
-
-    // Place Bet (Simultaneous)
+    // Place bet (Active player only)
     socket.on('placeBet', ({ roomCode, betAmount }) => {
         const room = rooms[roomCode];
         if (!room || room.gameState !== 'BETTING') return;
 
-        const player = room.players.find(p => p.socketId === socket.id);
-        if (!player || player.isEliminated || player.status === 'Ready') return;
+        const activePlayer = room.players[room.activePlayerIndex];
+        if (!activePlayer || activePlayer.socketId !== socket.id) return;
 
         const bet = parseInt(betAmount) || 0;
-        if (bet < 10 && player.balance >= 10) {
+        const maxBet = Math.min(activePlayer.balance, room.pot);
+
+        if (bet < 10 && maxBet >= 10) {
             socket.emit('errorMessage', 'Minimum bet is 10 chips!');
             return;
         }
-        if (bet > player.balance) {
-            socket.emit('errorMessage', 'Cannot bet more than balance!');
+        if (bet > maxBet) {
+            socket.emit('errorMessage', 'Cannot bet more than pot/balance limit!');
             return;
         }
 
-        player.currentBet = bet;
-        player.balance -= bet;
-        player.isPass = false;
-        player.status = 'Ready';
+        activePlayer.currentBet = bet;
+        activePlayer.balance -= bet;
+        activePlayer.isPass = false;
+        activePlayer.status = 'Ready';
 
-        addRoomLog(room, `${player.name} placed bet of ${bet} chips.`, 'info');
+        addRoomLog(room, `${activePlayer.name} placed a bet of ${bet} chips.`, 'info');
         io.to(roomCode).emit('roomUpdate', getClientRoomState(room));
         io.to(roomCode).emit('soundCue', 'chip');
 
-        if (checkAllBetsLocked(room)) {
-            triggerThirdCardDraw(roomCode);
-        }
+        setTimeout(() => {
+            drawThirdCardForActivePlayer(roomCode);
+        }, 800);
     });
 
-    // Pass / Fold (Simultaneous)
+    // Pass turn (Active player only)
     socket.on('passRound', ({ roomCode }) => {
         const room = rooms[roomCode];
         if (!room || room.gameState !== 'BETTING') return;
 
-        const player = room.players.find(p => p.socketId === socket.id);
-        if (!player || player.isEliminated || player.status === 'Passed') return;
+        const activePlayer = room.players[room.activePlayerIndex];
+        if (!activePlayer || activePlayer.socketId !== socket.id) return;
 
-        player.currentBet = 0;
-        player.isPass = true;
-        player.status = 'Passed';
+        activePlayer.currentBet = 0;
+        activePlayer.isPass = true;
+        activePlayer.status = 'Passed';
 
-        addRoomLog(room, `${player.name} passed this round.`, 'info');
+        addRoomLog(room, `${activePlayer.name} passed their turn.`, 'info');
         io.to(roomCode).emit('roomUpdate', getClientRoomState(room));
         io.to(roomCode).emit('soundCue', 'slide');
 
-        if (checkAllBetsLocked(room)) {
-            triggerThirdCardDraw(roomCode);
-        }
-    });
-
-    // Trigger next round (Host only)
-    socket.on('nextRound', ({ roomCode }) => {
-        const room = rooms[roomCode];
-        if (!room) return;
-
-        const sender = room.players.find(p => p.socketId === socket.id);
-        if (!sender || !sender.isHost) return;
-
-        if (room.gameState !== 'ROUND_END') return;
-
-        // Discard
-        room.deck.discardCard(room.cardA);
-        room.deck.discardCard(room.cardB);
-        room.deck.discardCard(room.cardC);
-
-        room.roundNumber++;
-        dealEndpoints(roomCode);
+        setTimeout(() => {
+            advanceTurn(roomCode);
+        }, 800);
     });
 
     // Disconnect handler
     socket.on('disconnect', () => {
         console.log(`Socket disconnected: ${socket.id}`);
 
-        // Clean room lists
         for (const roomCode in rooms) {
             const room = rooms[roomCode];
             const pIndex = room.players.findIndex(p => p.socketId === socket.id);
-            
+
             if (pIndex > -1) {
                 const leavingPlayer = room.players[pIndex];
                 
-                // Remove player
                 room.players.splice(pIndex, 1);
                 addRoomLog(room, `${leavingPlayer.name} disconnected.`, 'info');
-                console.log(`Player ${leavingPlayer.name} disconnected from room ${roomCode}`);
 
                 if (room.players.length === 0) {
-                    // Delete empty room
                     delete rooms[roomCode];
                     console.log(`Deleted empty room: ${roomCode}`);
                 } else {
-                    // Reassign host if the host left
+                    // Host reassignment
                     if (leavingPlayer.isHost) {
                         const nextHuman = room.players.find(p => !p.isBot);
                         if (nextHuman) {
                             nextHuman.isHost = true;
                             addRoomLog(room, `${nextHuman.name} is now the Host.`, 'info');
                         } else {
-                            // Only bots left, delete
                             delete rooms[roomCode];
                             console.log(`Deleted room ${roomCode} as only bots remained.`);
                             continue;
                         }
                     }
 
+                    // Turn correction if active player disconnected
+                    if (room.activePlayerIndex >= room.players.length) {
+                        room.activePlayerIndex = 0;
+                    }
+
                     io.to(roomCode).emit('roomUpdate', getClientRoomState(room));
                     io.to(roomCode).emit('toastMessage', `${leavingPlayer.name} left the table.`);
-                    
-                    // If in BETTING state, check if remaining players are ready
-                    if (room.gameState === 'BETTING' && checkAllBetsLocked(room)) {
-                        triggerThirdCardDraw(roomCode);
+
+                    // If active player left in middle of turn, advance automatically
+                    if (room.gameState === 'BETTING' && room.players[room.activePlayerIndex].id === leavingPlayer.id) {
+                        advanceTurn(roomCode);
                     }
                 }
             }
@@ -739,7 +796,6 @@ io.on('connection', (socket) => {
     });
 });
 
-// Start listening
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`In-Between socket server listening on port ${PORT}`);

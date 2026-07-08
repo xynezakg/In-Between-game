@@ -355,6 +355,8 @@ class Game {
 
         // Game Header
         this.gameRoomCodeLbl = document.getElementById('game-room-code-lbl');
+        this.tablePotVal = document.getElementById('table-pot-val');
+        this.activeHandHolder = document.getElementById('active-hand-holder');
         this.deckSizeLbl = document.getElementById('deck-size-lbl');
         this.dealerBubble = document.getElementById('dealer-bubble');
         this.roundNumLbl = document.getElementById('round-num-lbl');
@@ -714,19 +716,27 @@ class Game {
         this.roundNumLbl.textContent = roomState.roundNumber;
         this.deckSizeLbl.textContent = roomState.deckSize;
         this.dealerBubble.textContent = roomState.dealerBubble;
+        
+        // Sync pot amount
+        if (this.tablePotVal) {
+            this.tablePotVal.textContent = roomState.pot;
+        }
+
+        // Sync hand holder
+        if (this.activeHandHolder) {
+            const activePlayer = roomState.players[roomState.activePlayerIndex];
+            this.activeHandHolder.textContent = activePlayer ? `${activePlayer.name}'s Deal` : "No Dealt Cards";
+        }
 
         // Render card states visually
         this.syncCardVisuals(roomState);
 
         // Render seats
-        this.renderSeatsGrid(roomState.players);
+        this.renderSeatsGrid(roomState.players, roomState.activePlayerIndex);
         this.updateStatsSidebar(roomState.players);
 
         // Sync logs
         this.syncLogsList(roomState.logs);
-
-        // Host table controls
-        this.syncHostControlsBar(roomState.gameState);
 
         // Simultaneous betting console display
         this.syncBettingConsole(roomState, me);
@@ -796,16 +806,16 @@ class Game {
         }
     }
 
-    renderSeatsGrid(players) {
+    renderSeatsGrid(players, activePlayerIndex) {
         this.seatsGrid.innerHTML = '';
         
-        players.forEach(p => {
+        players.forEach((p, idx) => {
             const seat = document.createElement('div');
             seat.className = 'player-seat';
             if (p.isEliminated) seat.classList.add('seat-eliminated');
             if (p.recentResult === "WIN") seat.classList.add('seat-win');
             if (p.recentResult === "LOSE") seat.classList.add('seat-lose');
-            if (p.status === 'Ready' && this.socket.id !== p.socketId) seat.classList.add('active'); // highlight ready online players
+            if (idx === activePlayerIndex) seat.classList.add('active'); // highlight the active player taking their turn
 
             const initials = p.name.substring(0, 2).toUpperCase();
             let statusClass = "";
@@ -856,11 +866,13 @@ class Game {
     }
 
     syncBettingConsole(roomState, me) {
-        if (!me || me.isEliminated || roomState.gameState !== 'BETTING' || me.status === 'Ready' || me.status === 'Passed') {
+        const activePlayer = roomState.players[roomState.activePlayerIndex];
+
+        if (!me || me.isEliminated || roomState.gameState !== 'BETTING' || !activePlayer || activePlayer.socketId !== this.socket.id) {
             this.bettingPanel.classList.remove('active');
             
-            if (roomState.gameState === 'BETTING' && me && (me.status === 'Ready' || me.status === 'Passed')) {
-                this.mainStatusMsg.textContent = "Waiting for other players to bet...";
+            if (roomState.gameState === 'BETTING' && activePlayer) {
+                this.mainStatusMsg.textContent = `Waiting for ${activePlayer.name} to bet...`;
             } else if (roomState.gameState === 'DEALING') {
                 this.mainStatusMsg.textContent = "Dealer dealing endpoints...";
             } else if (roomState.gameState === 'REVEALING') {
@@ -868,35 +880,36 @@ class Game {
             } else if (roomState.gameState === 'EVALUATING') {
                 this.mainStatusMsg.textContent = "Evaluating round outcomes...";
             } else if (roomState.gameState === 'ROUND_END') {
-                this.mainStatusMsg.textContent = this.isHost ? "Host: Click Next Round to proceed" : "Waiting for Host to start next round...";
+                this.mainStatusMsg.textContent = "Advancing to the next turn...";
             }
             return;
         }
 
-        // Show betting panel
-        this.mainStatusMsg.textContent = "Place your bet!";
+        // Show betting panel for active player
+        this.mainStatusMsg.textContent = "Your Turn! Place your bet.";
         this.bettingPlayerName.textContent = me.name;
         this.bettingPlayerBalance.textContent = me.balance;
         this.bettingPlayerAvatar.textContent = me.name.substring(0,2).toUpperCase();
         this.bettingPlayerAvatar.style.backgroundColor = me.color;
 
-        // Reset sliders bounds
+        // Reset sliders bounds (Capped by Pot limit)
+        const maxBet = Math.min(me.balance, roomState.pot);
         this.betSlider.min = 10;
-        this.betSlider.max = me.balance;
+        this.betSlider.max = maxBet;
         this.betSlider.step = 10;
 
-        if (me.balance < 10) {
-            this.betSlider.min = me.balance;
-            this.betSlider.max = me.balance;
-            this.betSlider.value = me.balance;
-            this.betInput.value = me.balance;
+        if (me.balance < 10 || maxBet < 10) {
+            this.betSlider.min = maxBet;
+            this.betSlider.max = maxBet;
+            this.betSlider.value = maxBet;
+            this.betInput.value = maxBet;
         } else {
             this.betSlider.value = 10;
             this.betInput.value = 10;
         }
 
-        this.betMaxLbl.textContent = `Max: ${me.balance}`;
-        this.betSlider.setAttribute('max', me.balance);
+        this.betMaxLbl.textContent = `Max: ${maxBet}`;
+        this.betSlider.setAttribute('max', maxBet);
 
         this.bettingPanel.classList.add('active');
     }
