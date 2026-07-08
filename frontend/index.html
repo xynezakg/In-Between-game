@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>In-Between (Acey Deucey) Casino Table</title>
+    <!-- Inline SVG Favicon -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🃏</text></svg>">
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Socket.io client library CDN -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <!-- Style stylesheet -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="theme-green">
+    <!-- Lobby Screen -->
+    <div id="lobby-screen" class="screen active">
+        <div class="lobby-container">
+            <header class="lobby-header animate-fade-in">
+                <div class="casino-badge">Royal Casino</div>
+                <h1>IN-BETWEEN</h1>
+                <p class="subtitle">Acey Deucey Multiplayer Card Game</p>
+            </header>
+
+            <main class="lobby-main">
+                <!-- Left panel: Player configuration (Join/Create) -->
+                <section class="lobby-card player-setup-panel">
+                    <!-- 1. Room Creation/Joining view (Initial) -->
+                    <div id="lobby-setup-view">
+                        <div class="panel-header">
+                            <h2>Seat Profile</h2>
+                        </div>
+
+                        <div class="add-player-form">
+                            <div class="input-group">
+                                <label for="player-name-input">Your Name</label>
+                                <input type="text" id="player-name-input" placeholder="Enter name (e.g. Alice)" maxlength="12" required autocomplete="off">
+                            </div>
+                            <div class="color-picker-group">
+                                <label>Avatar Color</label>
+                                <div class="avatar-colors" id="avatar-color-choices">
+                                    <button type="button" class="color-btn active" data-color="#e74c3c" style="background-color: #e74c3c;"></button>
+                                    <button type="button" class="color-btn" data-color="#3498db" style="background-color: #3498db;"></button>
+                                    <button type="button" class="color-btn" data-color="#2ecc71" style="background-color: #2ecc71;"></button>
+                                    <button type="button" class="color-btn" data-color="#f1c40f" style="background-color: #f1c40f;"></button>
+                                    <button type="button" class="color-btn" data-color="#9b59b6" style="background-color: #9b59b6;"></button>
+                                    <button type="button" class="color-btn" data-color="#e67e22" style="background-color: #e67e22;"></button>
+                                    <button type="button" class="color-btn" data-color="#1abc9c" style="background-color: #1abc9c;"></button>
+                                    <button type="button" class="color-btn" data-color="#34495e" style="background-color: #34495e;"></button>
+                                </div>
+                            </div>
+
+                            <div class="lobby-divider"></div>
+
+                            <div class="lobby-actions-group" style="display: flex; flex-direction: column; gap: 15px;">
+                                <button type="button" id="create-room-btn" class="btn primary-btn btn-full">
+                                    <svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                                    Create New Table
+                                </button>
+                                
+                                <div class="or-separator" style="text-align: center; color: var(--color-text-muted); font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;">— OR —</div>
+                                
+                                <div class="input-group">
+                                    <label for="room-code-input">Enter Table Code</label>
+                                    <input type="text" id="room-code-input" placeholder="e.g. WXYZ" maxlength="4" style="text-transform: uppercase; text-align: center; font-weight: 700; letter-spacing: 2px;">
+                                </div>
+
+                                <button type="button" id="join-room-btn" class="btn secondary-btn btn-full">
+                                    <svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+                                    Join Existing Table
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 2. Connected Room Lobby view (Visible after join/create) -->
+                    <div id="lobby-room-view" class="hidden">
+                        <div class="panel-header">
+                            <h2 style="font-family: var(--font-accent);">Table Code: <span id="lobby-room-code-lbl" class="gold-text">WXYZ</span></h2>
+                            <span class="seat-counter"><span id="seat-count">0</span> / 8 Players</span>
+                        </div>
+
+                        <div class="players-list-container">
+                            <h3>Players at the Table</h3>
+                            <div id="lobby-players-list" class="lobby-players-list">
+                                <!-- Injected dynamically by Server roomUpdate -->
+                            </div>
+                        </div>
+
+                        <div class="lobby-divider"></div>
+
+                        <div id="host-controls" class="host-controls hidden">
+                            <button type="button" id="lobby-add-bot-btn" class="btn secondary-btn btn-full">
+                                🤖 Add Bot Player
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Right panel: How to play and Start action -->
+                <section class="lobby-card game-info-panel">
+                    <div class="rules-summary">
+                        <h3>How to Play</h3>
+                        <ul>
+                            <li><strong>Step 1:</strong> The AI Dealer reveals two cards.</li>
+                            <li><strong>Step 2:</strong> Players place bets on whether the third card drawn will fall strictly <em>in-between</em> the values of the first two cards.</li>
+                            <li><strong>Step 3:</strong> The Dealer draws the third card.</li>
+                            <li><strong>Payout:</strong> Wins pay <strong>1:1</strong>. Losses deduct the bet amount.</li>
+                            <li><strong>Strictly In-Between:</strong> Equal values to the endpoints are a loss (e.g. drawing a 4 when table cards are 4 and 10).</li>
+                            <li><strong>Autolosses:</strong> Pairs (e.g. 5, 5) and adjacent cards (e.g. 8, 9) have no in-between values and automatically lose.</li>
+                            <li><strong>Ace is always HIGH</strong> (rank value 14).</li>
+                        </ul>
+                    </div>
+                    
+                    <div class="lobby-actions">
+                        <div id="lobby-status-msg" class="lobby-status-msg" style="text-align: center; color: var(--color-gold-light); font-weight: 600; padding: 12px; border: 1px dashed rgba(241,196,15,0.3); border-radius: 8px; margin-bottom: 15px; font-size: 0.95rem;">
+                            Set your seat profile to create or join a table...
+                        </div>
+                        <button id="start-game-btn" class="btn play-btn btn-full hidden" disabled>
+                            Start Game
+                            <svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                        </button>
+                    </div>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <!-- Game Screen -->
+    <div id="game-screen" class="screen">
+        <!-- Sidebar Container (Logs & Stats) -->
+        <aside id="sidebar" class="sidebar">
+            <div class="sidebar-tabs">
+                <button class="tab-btn active" data-tab="game-log-tab">Game Log</button>
+                <button class="tab-btn" data-tab="stats-tab">Statistics</button>
+            </div>
+            
+            <!-- Game Log Tab -->
+            <div id="game-log-tab" class="tab-content active">
+                <div class="log-header">
+                    <h3>Dealer & Player Activity</h3>
+                    <button id="clear-log-btn" class="btn text-btn">Clear</button>
+                </div>
+                <div id="game-log-list" class="log-list">
+                    <!-- Logs injected here -->
+                </div>
+            </div>
+            
+            <!-- Statistics Tab -->
+            <div id="stats-tab" class="tab-content">
+                <div class="stats-header">
+                    <h3>Performance Tracker</h3>
+                    <button id="reset-stats-btn-sidebar" class="btn text-btn">Reset All</button>
+                </div>
+                <div id="stats-players-list" class="stats-players-list">
+                    <!-- Stats injected here -->
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Casino Board -->
+        <main class="table-container">
+            <!-- Top Action Bar -->
+            <header class="game-header">
+                <div class="header-left">
+                    <button id="toggle-sidebar-btn" class="btn icon-btn" title="Toggle Sidebar">
+                        <svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+                    </button>
+                    <div class="header-logo">
+                        <span class="casino-badge">Table Code: <span id="game-room-code-lbl" class="gold-text">WXYZ</span></span>
+                        <h2>IN-BETWEEN</h2>
+                    </div>
+                </div>
+                
+                <div class="header-right">
+                    <button id="mute-sound-btn" class="btn icon-btn" title="Toggle Sound">
+                        <svg class="icon sound-icon-on" viewBox="0 0 24 24"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                        <svg class="icon sound-icon-off hidden" viewBox="0 0 24 24"><path fill="currentColor" d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.21.05-.42.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>
+                    </button>
+                    <button id="game-rules-btn" class="btn icon-btn" title="How to Play">
+                        <svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 16h-2v-6h2v6zm0-8h-2V6h2v4z"/></svg>
+                    </button>
+                    <button id="open-settings-btn" class="btn icon-btn" title="Settings">
+                        <svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+                    </button>
+                    <button id="fullscreen-btn" class="btn icon-btn" title="Toggle Fullscreen">
+                        <svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+                    </button>
+                    <button id="lobby-exit-btn" class="btn danger-btn-outline" title="Back to Lobby">Lobby</button>
+                </div>
+            </header>
+
+            <!-- The Felt Card Table -->
+            <div id="card-table" class="card-table-felt">
+                <div class="table-overlay"></div>
+                
+                <!-- Dealer Row -->
+                <div class="dealer-section">
+                    <!-- Deck of Cards Pile -->
+                    <div class="deck-pile-container">
+                        <div id="deck-card-stack" class="deck-stack">
+                            <img src="cards/back.png" alt="Deck Back" class="card-back-img">
+                            <img src="cards/back.png" alt="Deck Back" class="card-back-img">
+                            <img src="cards/back.png" alt="Deck Back" class="card-back-img">
+                        </div>
+                        <div class="deck-counter">DECK: <span id="deck-size-lbl">52</span></div>
+                    </div>
+
+                    <!-- Dealer Identity Card -->
+                    <div class="dealer-info">
+                        <div class="dealer-avatar">
+                            <span>🤖</span>
+                        </div>
+                        <div class="dealer-name-container">
+                            <div class="dealer-name">Dealer (AI)</div>
+                            <div id="dealer-bubble" class="dealer-bubble">Hello players! Place your bets for the next round.</div>
+                        </div>
+                    </div>
+
+                    <!-- Discard Pile -->
+                    <div class="discard-pile-container">
+                        <div id="discard-card-stack" class="discard-stack">
+                            <!-- Injected top discarded card here -->
+                            <div class="empty-discard">Discard</div>
+                        </div>
+                        <div class="discard-counter">DISCARD</div>
+                    </div>
+                </div>
+
+                <!-- Central Table Action (Cards Dealt) -->
+                <div class="center-table-display">
+                    <!-- Title/Round Banner -->
+                    <div class="round-indicator">ROUND <span id="round-num-lbl">1</span></div>
+                    <div id="main-status-msg" class="main-status-msg">Waiting for bets...</div>
+
+                    <div class="table-cards-row">
+                        <!-- Left Dealt Card -->
+                        <div class="table-card-container">
+                            <span class="card-label">Card A (Low)</span>
+                            <div id="table-card-a" class="game-card empty">
+                                <div class="card-inner">
+                                    <div class="card-front"></div>
+                                    <div class="card-back"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Center / Third Dealt Card -->
+                        <div class="table-card-container highlight-card-container">
+                            <span class="card-label third-card-label">Third Card (In-Between)</span>
+                            <div id="table-card-c" class="game-card empty third-card">
+                                <div class="card-inner">
+                                    <div class="card-front"></div>
+                                    <div class="card-back"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Right Dealt Card -->
+                        <div class="table-card-container">
+                            <span class="card-label">Card B (High)</span>
+                            <div id="table-card-b" class="game-card empty">
+                                <div class="card-inner">
+                                    <div class="card-front"></div>
+                                    <div class="card-back"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Range visualizer -->
+                    <div id="range-visualizer" class="range-visualizer hidden">
+                        <div class="range-bar">
+                            <span id="range-min-lbl" class="range-bound">2</span>
+                            <div class="range-fill">In-Between Range</div>
+                            <span id="range-max-lbl" class="range-bound">10</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Player Seats Arc -->
+                <div id="player-seats-grid" class="player-seats-grid">
+                    <!-- Dynamic seats generated via JS -->
+                </div>
+            </div>
+
+            <!-- Bottom Console / Betting Panel (Appears when active player's turn to bet) -->
+            <div id="betting-panel" class="betting-panel">
+                <div class="betting-player-header">
+                    <span id="betting-player-avatar" class="seat-avatar">A</span>
+                    <div>
+                        <span id="betting-player-name" class="seat-name">Alice</span>'s Turn
+                        <div class="betting-player-chips">Balance: <span class="gold-text"><span id="betting-player-balance">1000</span> chips</span></div>
+                    </div>
+                </div>
+
+                <div class="betting-controls">
+                    <!-- Chip presets -->
+                    <div class="chip-presets">
+                        <button type="button" class="chip-preset-btn" data-value="10">10</button>
+                        <button type="button" class="chip-preset-btn" data-value="20">20</button>
+                        <button type="button" class="chip-preset-btn" data-value="50">50</button>
+                        <button type="button" class="chip-preset-btn" data-value="100">100</button>
+                        <button type="button" class="chip-preset-btn" data-value="250">250</button>
+                        <button type="button" class="chip-preset-btn" data-value="500">500</button>
+                        <button type="button" class="chip-preset-btn all-in-preset" id="bet-preset-all-in">All In</button>
+                    </div>
+
+                    <!-- Slider and Input -->
+                    <div class="betting-inputs">
+                        <div class="slider-container">
+                            <span class="min-bet-lbl">Min: 10</span>
+                            <input type="range" id="bet-range-slider" min="10" max="1000" step="10" value="10">
+                            <span class="max-bet-lbl" id="bet-max-lbl-display">Max: 1000</span>
+                        </div>
+                        <div class="bet-input-box">
+                            <input type="number" id="bet-number-input" min="10" max="1000" step="10" value="10">
+                            <span class="chips-suffix">Chips</span>
+                        </div>
+                    </div>
+
+                    <!-- Action buttons -->
+                    <div class="betting-actions">
+                        <button id="pass-bet-btn" class="btn secondary-btn">Pass / Fold</button>
+                        <button id="confirm-bet-btn" class="btn play-btn flex-grow-1">Place Bet</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Toast Notification Box -->
+            <div id="notification-toast" class="notification-toast">
+                Hello world!
+            </div>
+        </main>
+    </div>
+
+    <!-- Modals -->
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal-overlay">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h2>Table Settings</h2>
+                <button class="modal-close-btn" data-close="settings-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Theme selection -->
+                <div class="setting-row">
+                    <label>Felt Theme</label>
+                    <select id="theme-selector">
+                        <option value="theme-green">Classic Emerald Felt</option>
+                        <option value="theme-blue">Royal Sapphire Felt</option>
+                        <option value="theme-dark">Charcoal Obsidian Felt</option>
+                    </select>
+                </div>
+                <!-- Card size selection -->
+                <div class="setting-row">
+                    <label>Playing Card Size</label>
+                    <select id="card-size-selector">
+                        <option value="card-sm">Small</option>
+                        <option value="card-md" selected>Medium</option>
+                        <option value="card-lg">Large</option>
+                    </select>
+                </div>
+                <!-- Animation Speed selection -->
+                <div class="setting-row">
+                    <label>Game Speed</label>
+                    <select id="game-speed-selector">
+                        <option value="500">Fast Action</option>
+                        <option value="1000" selected>Normal</option>
+                        <option value="1800">Slow & Cinematic</option>
+                    </select>
+                </div>
+                <!-- Sound Toggle -->
+                <div class="setting-row">
+                    <label>Sound Effects</label>
+                    <label class="switch">
+                        <input type="checkbox" id="sound-effects-toggle" checked>
+                        <span class="slider round"></span>
+                    </label>
+                </div>
+                <div class="modal-divider"></div>
+                <!-- Actions -->
+                <div class="settings-actions">
+                    <button id="reset-stats-btn-modal" class="btn warning-btn btn-full">Reset All Player Statistics</button>
+                    <button id="reset-game-btn-modal" class="btn danger-btn btn-full">Reset Game Session (Back to Lobby)</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- How To Play Modal -->
+    <div id="rules-modal" class="modal-overlay">
+        <div class="modal-card modal-large">
+            <div class="modal-header">
+                <h2>Game Rules: In-Between (Acey Deucey)</h2>
+                <button class="modal-close-btn" data-close="rules-modal">&times;</button>
+            </div>
+            <div class="modal-body scrollable-modal-body">
+                <p>Welcome to **In-Between**, a fast-paced game of odds, bets, and card values! The dealer leads the action, and your goal is to bet on the gap between two cards.</p>
+                
+                <h3>Core Mechanics</h3>
+                <ol>
+                    <li>At the start of each round, the dealer reveals two cards: **Card A (Low)** and **Card B (High)**.</li>
+                    <li>These cards are sorted automatically. For example, if the dealer draws a 10 and a 4, they are placed on the table with the 4 on the left and the 10 on the right.</li>
+                    <li>All players then take turns deciding to **place a bet** (from 10 chips up to their maximum balance) or **pass (fold)**. If you pass, you sit out this round without losing chips.</li>
+                    <li>Once all bets are locked, the dealer draws **Card C (The Third Card)** and places it in the center.</li>
+                </ol>
+
+                <h3>Winning & Losing</h3>
+                <ul>
+                    <li><span class="status-badge status-win">Win (1:1 Payout)</span>: If the numerical value of the Third Card is **strictly between** Card A and Card B.
+                        <br><em>Example:</em> Table has **4** and **10**. Third card is **7**. You win!
+                    </li>
+                    <li><span class="status-badge status-lose">Loss</span>: If the Third Card is **outside** the range of Card A and Card B, or **equal** to one of them.
+                        <br><em>Example:</em> Table has **4** and **10**. Third card is **2** (outside) or **4** (equal). You lose!
+                    </li>
+                    <li><strong>Adjacent Cards (Auto-Loss):</strong> If the dealer deals two adjacent cards (e.g., **7** and **8**), there are no integers in-between. Betting is disabled or results in an automatic loss. It is recommended to <strong>Pass</strong>.</li>
+                    <li><strong>Pair (Auto-Loss):</strong> If the dealer deals two cards of the same value (e.g., **Jack** and **Jack**), they form a pair. The dealer cannot deal a third card "in-between" them. Any active bets lose automatically. It is recommended to <strong>Pass</strong>.</li>
+                    <li><strong>Ace Value:</strong> Aces are always high in this game (value of 14, above King).</li>
+                </ul>
+
+                <h3>Controls</h3>
+                <ul>
+                    <li>Use the **preset buttons** (10, 50, All-in, etc.) or the **slider** to set your bet.</li>
+                    <li>Open the **Settings** panel to toggle sound, felt themes, card sizes, or adjust animation speeds.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- Game Over Overlay (Confetti and Leaderboard) -->
+    <div id="game-over-screen" class="screen">
+        <div class="game-over-container">
+            <div class="trophy-icon">🏆</div>
+            <h1>Session Ended</h1>
+            <p>Here are the final standings for this session:</p>
+            
+            <div class="leaderboard-table-container">
+                <table class="leaderboard-table">
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Player</th>
+                            <th>Final Chips</th>
+                            <th>Win Rate</th>
+                            <th>Biggest Win</th>
+                        </tr>
+                    </thead>
+                    <tbody id="leaderboard-body">
+                        <!-- Injected by JS -->
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="game-over-actions">
+                <button id="go-to-lobby-btn" class="btn primary-btn btn-full">Back to Lobby</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Canvas Confetti Overlay -->
+    <canvas id="confetti-canvas" class="confetti-canvas"></canvas>
+
+    <!-- Script JavaScript -->
+    <script src="script.js"></script>
+</body>
+</html>
