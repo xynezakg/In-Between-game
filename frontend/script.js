@@ -3,7 +3,7 @@
    ========================================================================== */
 
 // --- Production Backend Server URL (Change to your Render URL) ---
-const SERVER_URL = 'https://in-between-card-game.onrender.com';
+const SERVER_URL = 'https://in-between-game-gkc7.onrender.com';
 
 // --- Web Audio API Sound Synthesizer ---
 class AudioManager {
