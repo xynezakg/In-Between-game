@@ -324,15 +324,13 @@ function dealEndpointsForActivePlayer(roomCode) {
                 innerRoom.dealerBubble = `${player.name}'s turn. Range is ${low} to ${high}. Max bet: ${Math.min(player.balance, innerRoom.pot)}`;
                 
                 io.to(roomCode).emit('roomUpdate', getClientRoomState(innerRoom));
-
                 if (player.isBot) {
                     executeBotTurn(roomCode);
                 }
             }
+        }, room.actionSpeed * 1.5);
 
-        }, refreshedRoom.actionSpeed * 1.5);
-
-    }, refreshedRoom.actionSpeed * 0.5);
+    }, room.actionSpeed * 0.5);
 }
 
 // Bot sequential turn decision
